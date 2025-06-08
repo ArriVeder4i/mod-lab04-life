@@ -1,131 +1,223 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+using System.Text.Json;
 using System.Threading;
 
 namespace cli_life
 {
+    public class Settings
+    {
+        public int Width { get; set; }
+        public int Height { get; set; }
+        public int CellSize { get; set; }
+        public double LiveDensity { get; set; }
+        public int SleepInterval { get; set; }
+        public string PatternsDirectory { get; set; }
+        public int StabilizationWindow { get; set; } = 5;
+    }
+
     public class Cell
     {
         public bool IsAlive;
-        public readonly List<Cell> neighbors = new List<Cell>();
-        private bool IsAliveNext;
-        public void DetermineNextLiveState()
+        public readonly List<Cell> Neighbors = new List<Cell>();
+        private bool nextState;
+
+        public void DetermineNextState()
         {
-            int liveNeighbors = neighbors.Where(x => x.IsAlive).Count();
-            if (IsAlive)
-                IsAliveNext = liveNeighbors == 2 || liveNeighbors == 3;
-            else
-                IsAliveNext = liveNeighbors == 3;
+            int live = Neighbors.Count(n => n.IsAlive);
+            nextState = IsAlive ? (live == 2 || live == 3) : (live == 3);
         }
-        public void Advance()
-        {
-            IsAlive = IsAliveNext;
-        }
+        public void Advance() => IsAlive = nextState;
     }
+
     public class Board
     {
-        public readonly Cell[,] Cells;
-        public readonly int CellSize;
+        public Cell[,] Cells;
+        public int Columns => Cells.GetLength(0);
+        public int Rows => Cells.GetLength(1);
 
-        public int Columns { get { return Cells.GetLength(0); } }
-        public int Rows { get { return Cells.GetLength(1); } }
-        public int Width { get { return Columns * CellSize; } }
-        public int Height { get { return Rows * CellSize; } }
-
-        public Board(int width, int height, int cellSize, double liveDensity = .1)
+        public Board(Settings s)
         {
-            CellSize = cellSize;
-
-            Cells = new Cell[width / cellSize, height / cellSize];
+            Cells = new Cell[s.Width / s.CellSize, s.Height / s.CellSize];
             for (int x = 0; x < Columns; x++)
                 for (int y = 0; y < Rows; y++)
                     Cells[x, y] = new Cell();
-
             ConnectNeighbors();
-            Randomize(liveDensity);
+            Randomize(s.LiveDensity);
         }
 
-        readonly Random rand = new Random();
-        public void Randomize(double liveDensity)
+        private void ConnectNeighbors()
         {
-            foreach (var cell in Cells)
-                cell.IsAlive = rand.NextDouble() < liveDensity;
+            for (int x = 0; x < Columns; x++)
+                for (int y = 0; y < Rows; y++)
+                {
+                    int[] dx = { -1, 0, 1 }, dy = { -1, 0, 1 };
+                    foreach (var i in dx)
+                        foreach (var j in dy)
+                        {
+                            if (i == 0 && j == 0) continue;
+                            int nx = (x + i + Columns) % Columns;
+                            int ny = (y + j + Rows) % Rows;
+                            Cells[x, y].Neighbors.Add(Cells[nx, ny]);
+                        }
+                }
+        }
+
+        public void Randomize(double density)
+        {
+            var rnd = new Random();
+            foreach (var c in Cells)
+                c.IsAlive = rnd.NextDouble() < density;
         }
 
         public void Advance()
         {
-            foreach (var cell in Cells)
-                cell.DetermineNextLiveState();
-            foreach (var cell in Cells)
-                cell.Advance();
+            foreach (var c in Cells) c.DetermineNextState();
+            foreach (var c in Cells) c.Advance();
         }
-        private void ConnectNeighbors()
+
+        public void Render()
         {
-            for (int x = 0; x < Columns; x++)
+            Console.Clear();
+            for (int y = 0; y < Rows; y++)
             {
+                for (int x = 0; x < Columns; x++)
+                    Console.Write(Cells[x, y].IsAlive ? '*' : ' ');
+                Console.WriteLine();
+            }
+        }
+
+        public void SaveState(string path)
+        {
+            using var w = new StreamWriter(path);
+            for (int y = 0; y < Rows; y++)
+            {
+                for (int x = 0; x < Columns; x++)
+                    w.Write(Cells[x, y].IsAlive ? '1' : '0');
+                w.WriteLine();
+            }
+        }
+        public void LoadState(string path)
+        {
+            var lines = File.ReadAllLines(path);
+            for (int y = 0; y < Math.Min(Rows, lines.Length); y++)
+            {
+                var line = lines[y];
+                for (int x = 0; x < Math.Min(Columns, line.Length); x++)
+                    Cells[x, y].IsAlive = line[x] == '1';
+            }
+        }
+
+        public (int single, int clusters) CountElements()
+        {
+            bool[,] visited = new bool[Columns, Rows];
+            int singles = 0, clustersCount = 0;
+            for (int x = 0; x < Columns; x++)
                 for (int y = 0; y < Rows; y++)
                 {
-                    int xL = (x > 0) ? x - 1 : Columns - 1;
-                    int xR = (x < Columns - 1) ? x + 1 : 0;
-
-                    int yT = (y > 0) ? y - 1 : Rows - 1;
-                    int yB = (y < Rows - 1) ? y + 1 : 0;
-
-                    Cells[x, y].neighbors.Add(Cells[xL, yT]);
-                    Cells[x, y].neighbors.Add(Cells[x, yT]);
-                    Cells[x, y].neighbors.Add(Cells[xR, yT]);
-                    Cells[x, y].neighbors.Add(Cells[xL, y]);
-                    Cells[x, y].neighbors.Add(Cells[xR, y]);
-                    Cells[x, y].neighbors.Add(Cells[xL, yB]);
-                    Cells[x, y].neighbors.Add(Cells[x, yB]);
-                    Cells[x, y].neighbors.Add(Cells[xR, yB]);
+                    if (!Cells[x, y].IsAlive || visited[x, y]) continue;
+                    var size = FloodFill(x, y, visited);
+                    if (size == 1) singles++; else clustersCount++;
                 }
+            return (singles, clustersCount);
+        }
+        private int FloodFill(int sx, int sy, bool[,] visited)
+        {
+            var stack = new Stack<(int x, int y)>();
+            stack.Push((sx, sy));
+            visited[sx, sy] = true;
+            int count = 0;
+            while (stack.Count > 0)
+            {
+                var (x, y) = stack.Pop(); count++;
+                int[] dx = { -1, 0, 1 }, dy = { -1, 0, 1 };
+                foreach (var i in dx)
+                    foreach (var j in dy)
+                    {
+                        int nx = (x + i + Columns) % Columns;
+                        int ny = (y + j + Rows) % Rows;
+                        if ((i != 0 || j != 0) && !visited[nx, ny] && Cells[nx, ny].IsAlive)
+                        {
+                            visited[nx, ny] = true;
+                            stack.Push((nx, ny));
+                        }
+                    }
             }
+            return count;
+        }
+
+        public int GenerationsToStabilize(int window)
+        {
+            var history = new Queue<int>();
+            int gens = 0;
+            while (true)
+            {
+                gens++;
+                Advance();
+                int alive = Cells.Cast<Cell>().Count(c => c.IsAlive);
+                history.Enqueue(alive);
+                if (history.Count > window) history.Dequeue();
+                if (history.Count == window && history.All(v => v == history.Peek())) break;
+            }
+            return gens;
         }
     }
+
     class Program
     {
-        static Board board;
-        static private void Reset()
-        {
-            board = new Board(
-                width: 50,
-                height: 20,
-                cellSize: 1,
-                liveDensity: 0.5);
-        }
-        static void Render()
-        {
-            for (int row = 0; row < board.Rows; row++)
-            {
-                for (int col = 0; col < board.Columns; col++)   
-                {
-                    var cell = board.Cells[col, row];
-                    if (cell.IsAlive)
-                    {
-                        Console.Write('*');
-                    }
-                    else
-                    {
-                        Console.Write(' ');
-                    }
-                }
-                Console.Write('\n');
-            }
-        }
+        static Settings s;
+        static Board b;
+
         static void Main(string[] args)
         {
-            Reset();
-            while(true)
+            s = JsonSerializer.Deserialize<Settings>(File.ReadAllText("Settings.json"));
+            b = new Board(s);
+
+            if (args.Length > 0)
+                b.LoadState(args[0]);
+
+            Console.WriteLine("Modes: R(run), A(analyze), Q(quit)");
+            var mode = Console.ReadKey(true).Key;
+            if (mode == ConsoleKey.A)
             {
-                Console.Clear();
-                Render();
-                board.Advance();
-                Thread.Sleep(1000);
+                Analyze();
+                return;
             }
+            RunLoop();
+        }
+
+        static void RunLoop()
+        {
+            bool paused = false;
+            while (true)
+            {
+                if (!paused) b.Advance();
+                b.Render();
+                if (Console.KeyAvailable)
+                {
+                    var k = Console.ReadKey(true).Key;
+                    if (k == ConsoleKey.S) { b.SaveState("saved_state.txt"); Console.WriteLine("Saved"); }
+                    if (k == ConsoleKey.L) { b.LoadState("saved_state.txt"); Console.WriteLine("Loaded"); }
+                    if (k == ConsoleKey.P) paused = !paused;
+                    if (k == ConsoleKey.Q) break;
+                }
+                Thread.Sleep(s.SleepInterval);
+            }
+        }
+
+        static void Analyze()
+        {
+            using var data = new StreamWriter("data.txt");
+            for (double d = 0.1; d <= 0.9; d += 0.2)
+            {
+                b.Randomize(d);
+                int gens = b.GenerationsToStabilize(s.StabilizationWindow);
+                data.WriteLine($"{d:F2}\t{gens}");
+                Console.WriteLine($"Density {d:F2}: {gens} gens");
+            }
+            Console.WriteLine("Data saved to data.txt");
         }
     }
 }
